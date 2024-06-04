@@ -1,17 +1,19 @@
+//nolint:dupl
 package plugin
 
 import (
 	"context"
 
-	"github.com/ebogdanov/emu-oncall/internal/logger"
+	"github.com/rs/zerolog"
+
 	"github.com/ebogdanov/emu-oncall/internal/user"
 )
 
 type Voip struct {
-	logger *logger.Instance
+	logger *zerolog.Logger
 }
 
-func NewVoip(l *logger.Instance) *Voip {
+func NewVoip(l *zerolog.Logger) *Voip {
 	return &Voip{logger: l}
 }
 

@@ -2,9 +2,15 @@ package v1
 
 import (
 	"encoding/json"
-	"github.com/ebogdanov/emu-oncall/internal/user"
 	"net/http"
+
+	"github.com/ebogdanov/emu-oncall/internal/user"
 )
+
+// ErrMessage is error message object
+type ErrMessage struct {
+	Msg string `json:"detail"`
+}
 
 type Users struct {
 	db *user.Storage
@@ -15,7 +21,7 @@ func NewUsers(db *user.Storage) *Users {
 }
 
 func (u *Users) ServeHTTP(response http.ResponseWriter, req *http.Request) {
-	result, err := u.db.ByFilter(req.Context(), *req)
+	result, err := u.db.Filter(req.Context(), *req)
 
 	if err == nil {
 		resp, err1 := json.Marshal(result)

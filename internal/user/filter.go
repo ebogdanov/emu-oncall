@@ -1,54 +1,57 @@
 package user
 
-// nolint:gosec
 import (
 	"context"
 	"database/sql"
 	"net/http"
 
-	"github.com/ebogdanov/emu-oncall/internal/logger"
+	"github.com/ebogdanov/emu-oncall/internal/db"
+	"github.com/rs/zerolog"
 
 	sq "github.com/Masterminds/squirrel"
 )
 
-const itemsOnPage = 100
+const (
+	itemsOnPage      = 1000
+	tableOnCallUsers = "oncall_users"
+)
 
 var (
 	colsWithPhone  = []string{"id", "user_id", "email", "username", "role", "phone_number"}
 	colsWithActive = []string{"id", "user_id", "email", "username", "role", "active"}
 
 	builderUsersSelect = sq.Select(colsWithPhone...).
-				From("users").
+				From(tableOnCallUsers).
 				PlaceholderFormat(sq.Dollar).
 				OrderBy("id ASC").
 				Limit(itemsOnPage)
 
 	builderUsersCount = sq.Select("count(id)").
-				From("users").
+				From(tableOnCallUsers).
 				PlaceholderFormat(sq.Dollar)
 
 	builderUserGet = sq.Select(colsWithActive...).
-			From("users").
+			From(tableOnCallUsers).
 			PlaceholderFormat(sq.Dollar).
 			Limit(1)
 
-	builderUpdateUser = sq.Update("users").
+	builderUpdateUser = sq.Update(tableOnCallUsers).
 				PlaceholderFormat(sq.Dollar)
 )
 
 type Storage struct {
-	db     *sql.DB
-	logger *logger.Instance
+	db     *db.DBx
+	logger zerolog.Logger
 }
 
-func NewStorage(db *sql.DB, l *logger.Instance) *Storage {
+func NewStorage(dbx *db.DBx, l zerolog.Logger) *Storage {
 	return &Storage{
-		db:     db,
-		logger: l,
+		db:     dbx,
+		logger: l.With().Str("component", "db").Logger(),
 	}
 }
 
-func (s *Storage) ByFilter(ctx context.Context, req http.Request) (*List, error) {
+func (s *Storage) Filter(ctx context.Context, req http.Request) (*List, error) {
 	opts := s.fromHTTPRequest(req)
 
 	return s.DBQuery(ctx, *opts)
@@ -62,20 +65,21 @@ func (s *Storage) DBQuery(ctx context.Context, opts Options) (*List, error) {
 
 	sqlResult, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		s.logger.Error().Str("component", "user_storage").
+		s.logger.Error().
 			Err(err).
+			Str("query", query).
 			Interface("args", args).
-			Msg("failed execute sql select users query")
+			Msgf("failed execute sql select query from %s", tableOnCallUsers)
 
 		return nil, err
 	}
 
 	cntResult, _ := s.db.QueryContext(ctx, queryCnt, args...)
 
-	return s.serializeList(cntResult, sqlResult, opts)
+	return s.process(cntResult, sqlResult, opts)
 }
 
-func (s *Storage) ByEmail(ctx context.Context, email string) (*Item, error) {
+func (s *Storage) WithEmail(ctx context.Context, email string) (*Item, error) {
 	opts := &Options{Email: email, Limit: 1, Short: false}
 
 	query, _, args, err := s.dbQuery(*opts)
@@ -85,37 +89,39 @@ func (s *Storage) ByEmail(ctx context.Context, email string) (*Item, error) {
 
 	sqlResult, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		s.logger.Error().Str("component", "user_storage").
+		s.logger.Error().
 			Err(err).
-			Msg("failed execute sql lookup user query")
+			Msgf("failed execute sql lookup query from %s", tableOnCallUsers)
 
 		return nil, err
 	}
 
-	var id uint64
 	defer func() { _ = sqlResult.Close() }()
+	var (
+		id uint64
+	)
 
+	item := &Item{}
 	if sqlResult.Next() {
-		item := &Item{}
 		err = sqlResult.Scan(&id, &item.ID, &item.Email, &item.Username, &item.Role, &item.PhoneNumber)
 
-		if err == nil {
-			item.IsPhoneNumberVerified = item.PhoneNumber != ""
+		if err != nil {
+			s.logger.Error().
+				Err(err).
+				Msg("unable to scan user row for query")
 
-			item.Slack = &Slack{
-				UserID: item.ID,
-				TeamID: item.ID,
-			}
-
-			return item, nil
+			return nil, err
 		}
 
-		s.logger.Error().Str("component", "user_storage").
-			Err(err).
-			Msg("unable to scan user row")
+		item.IsPhoneNumberVerified = item.PhoneNumber != ""
+
+		item.Slack = &Slack{
+			UserID: item.ID,
+			TeamID: item.ID,
+		}
 	}
 
-	return nil, err
+	return item, nil
 }
 
 func (s *Storage) dbQuery(opts Options) (query, cntQuery string, args []interface{}, err error) {
@@ -157,9 +163,9 @@ func (s *Storage) dbQuery(opts Options) (query, cntQuery string, args []interfac
 
 	query, args, err = selectQueryBuilder.ToSql()
 	if err != nil {
-		s.logger.Error().Str("component", "user_storage").
+		s.logger.Error().
 			Err(err).
-			Msg("failed build select users sql")
+			Msgf("failed build select sql from %s", tableOnCallUsers)
 
 		return "", "", nil, err
 	}
@@ -169,7 +175,7 @@ func (s *Storage) dbQuery(opts Options) (query, cntQuery string, args []interfac
 	return query, cntQuery, args, err
 }
 
-func (s *Storage) serializeList(cntResult, sqlResult *sql.Rows, opts Options) (*List, error) {
+func (s *Storage) process(cntResult, sqlResult *sql.Rows, opts Options) (*List, error) {
 	var (
 		id          uint64
 		err         error
@@ -186,9 +192,9 @@ func (s *Storage) serializeList(cntResult, sqlResult *sql.Rows, opts Options) (*
 		err = cntResult.Scan(&cntRows)
 
 		if err != nil {
-			s.logger.Error().Str("component", "user_storage").
+			s.logger.Error().
 				Err(err).
-				Msg("unable to scan cnt result")
+				Msg("unable to scan count result")
 		}
 	}
 
@@ -208,7 +214,7 @@ func (s *Storage) serializeList(cntResult, sqlResult *sql.Rows, opts Options) (*
 		err = sqlResult.Scan(&id, &item.ID, &item.Email, &item.Username, &item.Role, &phoneNumber)
 
 		if err != nil {
-			s.logger.Error().Str("component", "user_storage").
+			s.logger.Error().
 				Err(err).
 				Msg("unable to scan user row")
 			break
@@ -218,6 +224,7 @@ func (s *Storage) serializeList(cntResult, sqlResult *sql.Rows, opts Options) (*
 		// Add "Slack details" + PhoneNumber if requested
 		if !opts.Short {
 			item.PhoneNumber = phoneNumber.String
+
 			item.Slack = &Slack{
 				UserID: item.ID,
 				TeamID: item.ID,

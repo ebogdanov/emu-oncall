@@ -28,5 +28,5 @@ WORKDIR /opt/
 COPY --from=builder /emu-oncall/bin/emu-oncall ./
 RUN chmod +x ./emu-oncall
 
-COPY ./config/config.yaml /opt/config/config.yaml
+COPY config/config.yml /opt/config/config.yaml
 CMD ["/opt/emu-oncall"]

@@ -2,18 +2,29 @@ version: '3.4'
 
 services:
   postgresql:
+    hostname: postgresql
     image: docker.io/library/postgres:12.13-alpine3.17
     restart: always
     environment:
       POSTGRES_PASSWORD: example
       POSTGRES_USER: user
-      POSTGRES_DB: emu-oncall
+      POSTGRES_DB: emu_oncall
     volumes:
-      - ./.docker/postgre:/docker-entrypoint-initdb.d
+      - ./.docker/postgre/dump.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - emuoncall
     ports:
       - '15432:5432'
+  #emu-oncall:
+  #  build:
+  #    dockerfile: Dockerfile
+  #    context: .
+  #  networks:
+  #    - emuoncall
+  #  ports:
+  #    - '10080:10080'
+  #  volumes:
+  #    - ./config/config.yml:/opt/config/config.yml
 
 networks:
   emuoncall:

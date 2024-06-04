@@ -1,6 +1,6 @@
 #!/bin/bash
 
-HOSTNAME="http://127.0.0.1:10080"
+HOSTNAME="http://127.0.0.1:8880"
 
-curl "${HOSTNAME}/api/v1/info" | jq
+curl -s -H "Authorization: Bearer test-it-settr" "${HOSTNAME}/api/v1/info" | jq
 

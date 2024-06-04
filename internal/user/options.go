@@ -8,9 +8,7 @@ import (
 
 const (
 	strTrue = "TRUE"
-)
 
-const (
 	roleAdmin    = "admin"
 	roleUser     = "user"
 	roleObserver = "observer"

@@ -1,346 +1,351 @@
 package grafana
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ebogdanov/emu-oncall/internal/metrics"
+
+	"github.com/rs/zerolog"
+
 	"github.com/ebogdanov/emu-oncall/internal/user"
 
 	"github.com/ebogdanov/emu-oncall/internal/config"
-	"github.com/ebogdanov/emu-oncall/internal/logger"
-
 	"github.com/ebogdanov/emu-oncall/plugin"
 )
 
 const (
-	endpointGrafanaUsers    = "%s/api/users?perpage=1000&page=%d"
-	endpointOnCallSchedules = "%s/api/v1/schedules/"
-	endpointIncidentDetails = "%s/api/plugin-proxy/grafana-oncall-app/api/internal/v1/alertgroups?search=%d"
+	endpointIncidentDetails = "%s/api/plugin-proxy/grafana-oncall-ui/api/internal/v1/alertgroups?search=%d"
 )
 
 const (
 	waitTime         = 100 * time.Millisecond
-	engineSyncPeriod = 1 * time.Minute
-	oncallSyncPeriod = 2 * time.Minute
+	oncallSyncPeriod = 1 * time.Minute
 	httpTimeout      = 15 * time.Second
 )
 
 const (
-	titleStartDuty    = `Начало смены`
-	templateStartDuty = `Произошла ротация дежурного на смене %s`
-	templateEndDuty   = `Ваше дежурство на смене %s закончилось`
+	titleDuty         = "-= Duty Status =-"
+	templateStartDuty = "Your duty %s started"
+	templateEndDuty   = "Duty %s is over"
+)
+
+// Lookup for something like " incident #123 #
+var (
+	regexpIncidentID = regexp.MustCompile(`\sincident\s#(\d+)\s`)
 )
 
 var (
-	regexpIncidentID = regexp.MustCompile(`incident\s#(\d+)\s`)
+	errNotAssigneeSchedule = errors.New("not found assignee for schedule")
+	errEmptyOnCallURL      = errors.New("grafana.oncall.url is empty. Skip load incident details")
+	errNotFoundIncident    = errors.New("incident is not found")
 )
 
 type Service interface {
-	CanLoadIncident() bool
-	IncidentDetails(context.Context, int) Render
-	CheckSchedules(context.Context) bool
+	IncidentDetails(context.Context, int) (Render, error)
 	Start(context.Context)
 }
 
-type scheduleCache = map[string]map[string]bool
+type ScheduleProcessor interface {
+	Current(ctx context.Context) (*ScheduleItem, error)
+}
 
 type Instance struct {
 	cfg           *config.Grafana
-	notify        plugin.Plugin
+	p             plugin.Plugin
 	repoUser      *user.Storage
-	httpClient    *http.Client
-	logger        *logger.Instance
-	onCallNow     scheduleCache
+	client        httpClient
+	logger        zerolog.Logger
 	notifyChannel chan *scheduleEvent
-	engineAuth    authCredentials
-	m             *sync.RWMutex
-	onceTime      *sync.Once
+	sm            *sync.RWMutex
+	duty          *OnDuty
+	promMetrics   *metrics.Storage
 }
 
-func New(cfg *config.Grafana, p plugin.Plugin, u *user.Storage, l *logger.Instance) Service {
+func New(cfg *config.Grafana, p plugin.Plugin, u *user.Storage, l zerolog.Logger, pm *metrics.Storage) Service {
+	auth := &engineToken{Token: cfg.Token}
+
 	instance := &Instance{
-		notify:        p,
+		p:             p,
 		repoUser:      u,
 		cfg:           cfg,
-		m:             &sync.RWMutex{},
-		onceTime:      &sync.Once{},
-		notifyChannel: make(chan *scheduleEvent),
-		engineAuth: &engineToken{User: cfg.User,
-			Password: cfg.Password,
-			Token:    cfg.Token},
-		logger: l,
+		sm:            &sync.RWMutex{},
+		notifyChannel: make(chan *scheduleEvent, 5000),
+		client:        newAPIClient(auth.HeaderValue(), pm),
+		logger:        l.With().Str("component", "grafana").Logger(),
+		duty:          NewOnDuty(),
+		promMetrics:   pm,
 	}
 	return instance
 }
 
-func (g *Instance) IncidentDetails(ctx context.Context, incidentID int) Render {
+func (g *Instance) IncidentDetails(ctx context.Context, incidentID int) (Render, error) {
 	var (
-		alertGroupResult alertGroupResponse
+		alertGroup alertGroupResponse
 	)
 
-	if incidentID == 0 {
-		return nil
+	if !g.cfg.IncidentDetails || incidentID == 0 {
+		return nil, nil
 	}
 
-	if g.cfg.OnCallURL == "" {
-		g.logger.Debug().
-			Str("component", "grafana").
-			Msg("grafana.oncall.url is empty. Skip load schedules")
-
-		return nil
+	if g.cfg.URL == "" {
+		return nil, errEmptyOnCallURL
 	}
 
 	requestURL := fmt.Sprintf(endpointIncidentDetails,
-		strings.TrimSuffix(g.cfg.OnCallURL, "/"), incidentID)
+		strings.TrimSuffix(g.cfg.URL, "/"), incidentID)
 
-	token := g.engineAuth.HeaderValue()
-	resp, err := g.apiCall(ctx, requestURL, token, "")
+	resp, err := g.client.Get(ctx, requestURL)
 
 	if err != nil {
-		g.logger.Error().
-			Str("component", "grafana").
-			Err(err).
-			Str("url", requestURL).
-			Msg("Unable to load incident from Grafana OnCall")
-
-		return nil
+		return nil, errors.Join(err, errors.New("Request URL: "+requestURL))
 	}
-
-	g.logger.Info().
-		Str("component", "grafana").
-		Bytes("response", resp).
-		Int("incidentID", incidentID).
-		Msg("Loaded incident details from Grafana API")
 
 	// Try to check if this is response with JSON error
-	err = json.Unmarshal(resp, &alertGroupResult)
+	err = json.Unmarshal(resp, &alertGroup)
 	if err != nil {
-		g.logger.Error().
-			Str("component", "grafana").
-			Err(err).
-			Msg("Unable to parse response JSON from Grafana OnCall")
-
-		return nil
+		return nil, err
 	}
 
-	for i := range alertGroupResult.Results {
-		if alertGroupResult.Results[i].InsideOrganizationNumber == incidentID {
-			return &alertGroupResult.Results[i]
+	for i := range alertGroup.Results {
+		if alertGroup.Results[i].InsideOrganizationNumber == incidentID {
+			return &alertGroup.Results[i], nil
 		}
 	}
 
-	return nil
-}
-
-func (g *Instance) CanLoadIncident() bool {
-	return g.cfg.TrackIncidentDetails
-}
-
-func (g *Instance) CheckSchedules(_ context.Context) bool {
-	var (
-		scheduleList schedulesResponse
-	)
-
-	// Read ICal file, if possible
-	for i := range scheduleList.Results {
-		g.scheduleEntry(scheduleList.Results[i])
+	err = errNotFoundIncident
+	if alertGroup.Message != "" {
+		err = errors.New(alertGroup.Message)
 	}
 
-	return true
+	if alertGroup.Detail != "" {
+		err = errors.New(alertGroup.Detail)
+	}
+
+	return nil, err
+}
+
+// checkOnCall will download file, parse it and return current user oncall now
+func (g *Instance) checkOnCall(ctx context.Context, schedule *config.ScheduleEntry) (*ScheduleItem, error) {
+	iCallURL := strings.TrimSuffix(g.cfg.OnCall.URL, "/") + schedule.IcalURL
+
+	client := NewIcsInstance(iCallURL, g.promMetrics)
+	current, err := client.Current(ctx)
+
+	if err != nil || current == nil {
+		return nil, err
+	}
+
+	if current.Name == "" {
+		current.Name = schedule.Name
+	}
+
+	current.transport = schedule.Transport
+	current.callbackURL = schedule.CallbackURL
+
+	return current, nil
 }
 
 func (g *Instance) Start(ctx context.Context) {
-	g.initHTTPClient()
+	scheduleTicker := time.NewTicker(oncallSyncPeriod)
 
-	g.CheckSchedules(ctx)
+	for {
+		select {
+		// Every 2 minutes, load & checks schedules
+		case <-scheduleTicker.C:
+			func() {
+				g.checkSchedules(ctx)
+			}()
 
-	go func() {
-		for {
-			select {
-			// Every 1 minute, load schedules
-			case <-time.After(oncallSyncPeriod):
-				if g.cfg.TrackSchedules {
-					g.CheckSchedules(ctx)
-				}
+		// Notification channel
+		case msg := <-g.notifyChannel:
+			go func(ctx context.Context, notifyMsg *scheduleEvent) {
+				g.notify(ctx, notifyMsg)
+			}(ctx, msg)
 
-			// Notification channel
-			case msg := <-g.notifyChannel:
-				go func(ctx context.Context, notifyMsg *scheduleEvent) {
-					g.sendNotification(ctx, notifyMsg)
-				}(ctx, msg)
+		case <-ctx.Done():
+			close(g.notifyChannel)
+			scheduleTicker.Stop()
+			return
 
-			case <-ctx.Done():
-				close(g.notifyChannel)
-				return
-
-			default:
-				time.Sleep(waitTime)
-			}
+		default:
+			time.Sleep(waitTime)
 		}
-	}()
+	}
 }
 
-func (g *Instance) sendNotification(ctx context.Context, msg *scheduleEvent) {
+func (g *Instance) notify(ctx context.Context, msg *scheduleEvent) {
 	//
 	var (
-		err error
-		res []byte
+		err       error
+		res       []byte
+		recipient *user.List
+		body      []byte
 	)
 
 	switch msg.Transport {
-	case push:
-		var recipient *user.List
-		recipient, err = g.repoUser.DBQuery(ctx, user.Options{UserID: msg.UserID})
-
-		if err == nil && len(recipient.Result) > 0 {
-			err = g.notify.SendSms(ctx, recipient.Result[0], "", msg.Msg)
-		}
-
 	case callback:
-		var body []byte
 		req := &formattedAlert{
-			Title:   titleStartDuty,
+			Title:   titleDuty,
 			Message: msg.Msg,
 		}
 
 		if body, err = json.Marshal(req); err == nil {
-			res, err = g.apiCall(ctx, "http://localhost:8080/integrations/v1/formatted_webhook/E06HHKeTcRiyTjJ13ChH4SLDd/", "", string(body))
+			res, err = g.client.Post(ctx, msg.URL, string(body))
+		}
+	default:
+		recipient, err = g.repoUser.DBQuery(ctx, user.Options{UserID: msg.UserID})
+
+		msgID := fmt.Sprintf("duty_start_%s", msg.ScheduleName)
+
+		if err == nil && len(recipient.Result) > 0 {
+			err = g.p.SendSms(ctx, recipient.Result[0], msgID, msg.Msg)
 		}
 	}
 
-	g.logger.Debug().
-		Err(err).
-		Bytes("result", res).
-		Interface("msg", msg).
-		Send()
-}
-
-func (g *Instance) initHTTPClient() *http.Client {
-	if g.httpClient != nil {
-		return g.httpClient
-	}
-
-	httpClient := &http.Client{Timeout: httpTimeout}
-
-	g.httpClient = httpClient
-
-	return httpClient
-}
-
-func (g *Instance) apiCall(ctx context.Context, apiURL, token, postBody string) ([]byte, error) {
-	var (
-		req *http.Request
-		err error
-	)
-
-	// Make call
-	if postBody == "" {
-		req, err = http.NewRequest(http.MethodGet, apiURL, http.NoBody)
-	} else {
-		req, err = http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer([]byte(postBody)))
-	}
-
-	req = req.WithContext(ctx)
-	req.Header.Add("Content-Type", "application/json")
-
-	if token != "" {
-		req.Header.Add("Authorization", token)
-	}
-
 	if err != nil {
-		return nil, err
-	}
-
-	resp, err := g.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	_ = resp.Body.Close()
-
-	return bodyBytes, err
-}
-
-func (g *Instance) scheduleEntry(item scheduleItem) {
-	g.m.RLock()
-	if len(item.OnCallNow) == 0 {
 		g.logger.Error().
-			Str("name", item.Name).
-			Msg("Schedule is empty")
+			Err(err).
+			Msg("Unable to send notification")
 
 		return
 	}
 
-	scheduleName := item.Name
-	currentSchedule := g.onCallNow
-	newSchedule := make(scheduleCache)
+	g.logger.Debug().
+		Bytes("result", res).
+		Interface("msg", msg).
+		Msg("Notification was sent")
+}
 
-	currentItem, sendNotification := currentSchedule[scheduleName]
-	g.m.RUnlock()
+func (g *Instance) checkSchedules(ctx context.Context) {
+	g.sm.Lock()
+	defer g.sm.Unlock()
 
-	for _, userID := range item.OnCallNow {
-		// Process cache items
-		// 1. Check if item is in cache
-		// 2. If not – add
-		// 3. If yes – check users, if not match – send notification
+	for _, item := range g.cfg.Schedules {
+		ctxT, cancelFunc := context.WithTimeout(ctx, 10*time.Second)
 
-		if !sendNotification {
-			if _, sendNotification = currentItem[userID]; sendNotification {
-				continue
-			}
-		}
+		g.logger.Debug().
+			Str("schedule", item.Name).
+			Str("url", item.IcalURL).
+			Msg("download ICS file from URL")
 
-		if newSchedule[scheduleName] == nil {
-			newSchedule[scheduleName] = make(map[string]bool)
-		}
-		newSchedule[scheduleName][userID] = true
+		schedule, err := g.checkOnCall(ctxT, item)
+		cancelFunc()
 
-		if sendNotification {
-			go func(userId, scheduleName string) {
-				text := fmt.Sprintf(templateStartDuty, scheduleName)
-				g.notifyChannel <- &scheduleEvent{
-					Transport: callback, UserID: userId, Msg: text, Title: titleStartDuty}
-			}(userID, scheduleName)
-		}
-	}
+		if err != nil {
+			g.promMetrics.SchedulesCounter.WithLabelValues(item.Name, "error").Inc()
 
-	g.m.Lock()
-	g.onCallNow = newSchedule
-	g.m.Unlock()
-
-	text := fmt.Sprintf(templateEndDuty, scheduleName)
-	for name, currentItem := range currentSchedule {
-		// Schedule is disabled or deleted for some reason
-		if _, ok := newSchedule[name]; !ok {
-			for uid := range currentItem {
-				go func(userId, scheduleName string) {
-					g.notifyChannel <- &scheduleEvent{
-						Transport: push, UserID: userId, Msg: text, ScheduleName: scheduleName}
-				}(uid, name)
-			}
+			g.logger.Error().
+				Str("schedule", item.Name).
+				Err(err).
+				Msg("failed to get entries for schedule")
 
 			continue
 		}
 
-		for uid := range currentItem {
-			if _, ok := newSchedule[name][uid]; !ok {
-				go func(userId, scheduleName string) {
-					g.notifyChannel <- &scheduleEvent{
-						Transport: push, UserID: userId, Msg: text, ScheduleName: scheduleName}
-				}(uid, name)
+		g.promMetrics.SchedulesCounter.WithLabelValues(schedule.Name, "ok").Inc()
+		g.scheduleEntry(schedule)
+	}
+}
+
+func (g *Instance) scheduleEntry(schedule *ScheduleItem) {
+	name := schedule.Name
+
+	curr := g.duty.Get(name)
+
+	currentOnCall, err := curr.Peek()
+	// This is first record, just add it
+	if err != nil {
+		curr.Push(schedule.Users)
+		return
+	}
+
+	startDuty, endDuty := compareSlices(schedule.Users, currentOnCall)
+	if len(startDuty)+len(endDuty) == 0 {
+		return
+	}
+
+	// Hey, your duty is starting
+	for _, userID := range startDuty {
+		g.promMetrics.Notifications.WithLabelValues("duty_start").Inc()
+
+		g.logger.Debug().
+			Str("username", userID).
+			Str("schedule", name).
+			Msg("send start duty notification")
+
+		text := fmt.Sprintf(templateStartDuty, name)
+
+		g.notifyChannel <- &scheduleEvent{
+			Transport: schedule.transport,
+			UserID:    userID,
+			Msg:       text,
+			Title:     titleDuty,
+			URL:       schedule.callbackURL}
+	}
+
+	// What a pity - duty is over :(
+	for _, userID := range endDuty {
+		g.promMetrics.Notifications.WithLabelValues("duty_end").Inc()
+
+		g.logger.Debug().
+			Str("username", userID).
+			Str("schedule", name).
+			Msg("send duty end notification")
+
+		text := fmt.Sprintf(templateEndDuty, name)
+		g.notifyChannel <- &scheduleEvent{
+			Transport: schedule.transport,
+			UserID:    userID,
+			Msg:       text,
+			Title:     titleDuty,
+			URL:       schedule.callbackURL}
+	}
+
+	_, _ = curr.Pop()
+	curr.Push(schedule.Users)
+}
+
+// nolint:gocritic
+func compareSlices(a, b []string) ([]string, []string) {
+	cntA := make(map[string]int)
+	cntB := make(map[string]int)
+
+	for _, item := range a {
+		cntA[item]++
+	}
+
+	for _, item := range b {
+		cntB[item]++
+	}
+
+	var (
+		diffA []string
+		diffB []string
+	)
+	for item, countA := range cntA {
+		countB, exists := cntB[item]
+		if !exists || countA != countB {
+			for i := 0; i < countA; i++ {
+				diffA = append(diffA, item)
 			}
 		}
 	}
+
+	for item, countB := range cntB {
+		countA, exists := cntA[item]
+		if !exists || countA != countB {
+			for i := 0; i < countB; i++ {
+				diffB = append(diffB, item)
+			}
+		}
+	}
+
+	return diffA, diffB
 }

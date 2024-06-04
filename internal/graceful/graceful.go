@@ -51,12 +51,6 @@ func AddCallback(fn ShutdownFunc) {
 	handler.add(fn)
 }
 
-// ExecOnError executes the given handler
-// when shutdown callback returns any error.
-func ExecOnError(cb func(err error)) {
-	execOnErr = cb
-}
-
 // WaitShutdown waits for application shutdown.
 //
 // If the user or operating system interrupts the graceful shutdown,
@@ -96,13 +90,4 @@ func WaitShutdown() error {
 	case <-ctx.Done():
 		return ErrTimeoutExceeded
 	}
-}
-
-func IsShuttingDown() bool {
-	return handler.isShuttingDown()
-}
-
-// ShutdownNow sends event to initiate graceful shutdown.
-func ShutdownNow() {
-	handler.forceStop <- struct{}{}
 }

@@ -12,7 +12,7 @@ const (
 	defaultDBPort         = 5432
 	defaultDBUser         = "admin"
 	defaultDBPassword     = "admin"
-	defaultDBName         = "emu-oncall"
+	defaultDBName         = "emu_oncall"
 	defaultDBDriver       = "postgres"
 	defaultDBTimeout      = 300 * time.Millisecond
 	defaultDBReadTimeout  = 50 * time.Millisecond

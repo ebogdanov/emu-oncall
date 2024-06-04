@@ -22,14 +22,6 @@ linters-settings:
   goconst:
     min-len: 2
     min-occurrences: 2
-  depguard:
-    list-type: blacklist
-    packages:
-      # logging is allowed only by logutils.Log, logrus
-      # is allowed to use only in logutils package
-      - github.com/sirupsen/logrus
-    packages-with-error-messages:
-      github.com/sirupsen/logrus: "logging is allowed only by logutils.Log"
   misspell:
     locale: US
   goimports:
@@ -71,7 +63,6 @@ linters:
     - bodyclose
     - staticcheck
     - stylecheck
-    - depguard
     - dogsled
     - dupl
     - errcheck

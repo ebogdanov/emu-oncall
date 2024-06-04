@@ -1,17 +1,19 @@
+//nolint:dupl
 package plugin
 
 import (
 	"context"
 
-	"github.com/ebogdanov/emu-oncall/internal/logger"
+	"github.com/rs/zerolog"
+
 	"github.com/ebogdanov/emu-oncall/internal/user"
 )
 
 type TextOutput struct {
-	logger *logger.Instance
+	logger *zerolog.Logger
 }
 
-func NewTextOutput(l *logger.Instance) *TextOutput {
+func NewTextOutput(l *zerolog.Logger) *TextOutput {
 	return &TextOutput{logger: l}
 }
 

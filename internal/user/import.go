@@ -25,7 +25,7 @@ func (s *Storage) Insert(ctx context.Context, id int, name, userName, email stri
 	if err != nil {
 		s.logger.Error().
 			Err(err).
-			Msg("Failed build SQL select user query")
+			Msgf("Failed build SQL select %s query", tableOnCallUsers)
 
 		return false, err
 	}
@@ -34,7 +34,7 @@ func (s *Storage) Insert(ctx context.Context, id int, name, userName, email stri
 	if err != nil {
 		s.logger.Error().
 			Err(err).
-			Msg("Failed execute SQL select user query")
+			Msgf("Failed execute SQL select %s query", tableOnCallUsers)
 
 		return false, err
 	}
@@ -49,7 +49,7 @@ func (s *Storage) Insert(ctx context.Context, id int, name, userName, email stri
 				s.logger.Error().
 					Err(err).
 					Str("username", userName).
-					Msg("Failed execute update user query")
+					Msgf("Failed execute update %s query", tableOnCallUsers)
 			}
 
 			return false, err
@@ -136,7 +136,7 @@ func (s *Storage) updateQuery(userID, email string, isAdmin, isActive bool, sqlR
 func hashUserID(id int, userName string) string {
 	// "U" + MD5(substr(userName + Id), 0, 14)
 
-	hashStr := strings.ToLower(userName) + fmt.Sprintf("%d", id)
+	hashStr := strings.ToLower(userName) + fmt.Sprintf("-%d", id)
 	// nolint:gosec
 	hash := md5.Sum([]byte(hashStr))
 	md5Str := hex.EncodeToString(hash[:])

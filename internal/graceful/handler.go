@@ -22,6 +22,7 @@ func newHandler(notify chan os.Signal, forceStop chan struct{}) *shutdownHandler
 	return &shutdownHandler{
 		stop:      notify,
 		forceStop: forceStop,
+		mutex:     sync.Mutex{},
 	}
 }
 
@@ -33,8 +34,4 @@ func (h *shutdownHandler) add(fn ShutdownFunc) {
 
 func (h *shutdownHandler) markAsShutdown() {
 	atomic.StoreUint32(&h.isClosed, handlerStatusClosed)
-}
-
-func (h *shutdownHandler) isShuttingDown() bool {
-	return atomic.LoadUint32(&h.isClosed) == handlerStatusClosed
 }

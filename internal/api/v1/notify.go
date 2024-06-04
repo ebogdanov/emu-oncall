@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/rs/zerolog"
+
+	"github.com/ebogdanov/emu-oncall/internal/metrics"
+
 	"github.com/ebogdanov/emu-oncall/internal/events"
-	grafana2 "github.com/ebogdanov/emu-oncall/internal/grafana"
-	user2 "github.com/ebogdanov/emu-oncall/internal/user"
+	"github.com/ebogdanov/emu-oncall/internal/grafana"
+	"github.com/ebogdanov/emu-oncall/internal/user"
 
 	"strings"
 	"sync"
@@ -16,7 +20,6 @@ import (
 
 	"errors"
 
-	"github.com/ebogdanov/emu-oncall/internal/logger"
 	"github.com/ebogdanov/emu-oncall/plugin"
 )
 
@@ -34,21 +37,22 @@ const (
 )
 
 const (
-	notifyBySms   = "sms"
-	notifyByPhone = "phone"
+	smsTextNotify   = "sms"
+	phoneCallNotify = "phone"
 )
 
-type NotifyResponse struct {
+type notifyResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
 type Notify struct {
 	plugin     plugin.Plugin
-	logger     *logger.Instance
-	userData   user2.Storage
+	logger     zerolog.Logger
+	users      user.Storage
 	actionsLog events.Service
-	grafanaSvc grafana2.Service
+	grafanaSvc grafana.Service
 	cache      sync.Map
+	pm         *metrics.Storage
 }
 
 type NotifyRequest struct {
@@ -56,170 +60,169 @@ type NotifyRequest struct {
 	Message string
 }
 
-func NewNotify(dbData *user2.Storage, pl plugin.Plugin, log *logger.Instance, actionLogger events.Service, grafanaService grafana2.Service) *Notify {
+func NewNotify(dbData *user.Storage, pl plugin.Plugin, logger zerolog.Logger, actionLogger events.Service, gfSvc grafana.Service, promMetrics *metrics.Storage) *Notify {
 	return &Notify{
-		userData:   *dbData,
+		users:      *dbData,
 		plugin:     pl,
 		cache:      sync.Map{},
-		logger:     log,
+		logger:     logger.With().Str("component", "notify").Logger(),
 		actionsLog: actionLogger,
-		grafanaSvc: grafanaService,
+		grafanaSvc: gfSvc,
+		pm:         promMetrics,
 	}
 }
 
-func (nh *Notify) ServeHTTP(response http.ResponseWriter, req *http.Request) {
-	var (
-		result interface{}
-		err    error
-		resp   []byte
-	)
+func (n *Notify) ServeHTTP(response http.ResponseWriter, req *http.Request) {
+	n.pm.Notifications.WithLabelValues("total").Inc()
 
-	if strings.HasPrefix(req.RequestURI, "/make_call") {
-		result, err = nh.PhoneCall(req.Context(), req)
-	} else {
-		result, err = nh.SMS(req.Context(), req)
+	notifyType := smsTextNotify
+	if strings.Contains(req.RequestURI, "/make_call") {
+		notifyType = phoneCallNotify
 	}
 
+	n.pm.Notifications.WithLabelValues(notifyType).Inc()
+
+	result, err := n.notification(req.Context(), req, notifyType)
 	if err == nil {
-		resp, err = json.Marshal(result)
-		if err == nil {
-			response.WriteHeader(http.StatusOK)
-			_, _ = response.Write(resp)
+		resp, _ := json.Marshal(result)
 
-			return
-		}
+		n.pm.Notifications.WithLabelValues("success").Inc()
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(resp)
+
+		return
 	}
+
+	n.pm.Notifications.WithLabelValues("error_" + notifyType).Inc()
+	n.pm.Notifications.WithLabelValues("fail").Inc()
+	resp, _ := json.Marshal(&notifyResponse{Error: err.Error()})
 
 	response.WriteHeader(http.StatusInternalServerError)
-	resp, _ = json.Marshal(err.Error())
-
 	_, _ = response.Write(resp)
 }
 
-func (nh *Notify) PhoneCall(ctx context.Context, req *http.Request) (interface{}, error) {
-	// Make select query to DB
-	// if error - lookup in local cache
-	// email=admin%40localhost&
-	// message=You+are+invited+to+check+an+incident+from+Grafana+OnCall.+Alert+via+Formatted+Webhook+%3Ablush%3A+with+title+TestAlert%3A+The+whole+system+is+down+triggered+1+times
+func (n *Notify) notification(ctx context.Context, req *http.Request, notificationType string) (interface{}, error) {
+	request, err := n.validate(ctx, req, notificationType)
 
-	return nh.notification(ctx, req, notifyByPhone)
-}
-
-func (nh *Notify) SMS(ctx context.Context, req *http.Request) (interface{}, error) {
-	return nh.notification(ctx, req, notifyBySms)
-}
-
-func (nh *Notify) notification(ctx context.Context, req *http.Request, notificationType string) (interface{}, error) {
-	request, err := nh.validate(ctx, req, notifyBySms)
 	if err != nil {
-		nh.logger.Error().
-			Str("component", "notify").
+		n.logger.Error().
 			Err(err).
 			Interface("notification_type", notificationType).
-			Interface("email", request.Email).
-			Msg("unable to to validate notification request")
+			Msg("Unable to validate notification request")
 
-		return &NotifyResponse{Error: err.Error()}, nil
+		return nil, err
 	}
 
-	userResult, err := nh.user(ctx, request.Email)
+	userResult, err := n.user(ctx, request.Email)
 	if err != nil || userResult == nil {
-		nh.logger.Error().
+		n.logger.Error().
 			Err(err).
 			Interface("notification_type", notificationType).
 			Interface("email", request.Email).
-			Msg("Unable to lookup user to send notification")
+			Msg("Unable to lookup user for notification")
 
-		return &NotifyResponse{Error: errUserNotFound.Error()}, nil
+		return nil, err
 	}
 
 	if !userResult.IsPhoneNumberVerified || userResult.PhoneNumber == "" {
-		return &NotifyResponse{Error: errUserPhoneNotVerified.Error()}, nil
+		return &notifyResponse{Error: errUserPhoneNotVerified.Error()}, nil
 	}
 
-	nh.logger.Info().
+	n.logger.Info().
 		Interface("user", userResult).
 		Interface("message", request).
 		Str("notification_type", notificationType).
-		Msg("Sending to user")
+		Msg("Sending message to user")
 
-	alertID := ""
 	msg := request.Message
-	incidentID := grafana2.IncidentID(msg)
+	alertID := ""
+	incidentID := grafana.IncidentID(msg)
 
-	// Load more details
-	if nh.grafanaSvc.CanLoadIncident() {
-		// Get details
-		alertGroup := nh.grafanaSvc.IncidentDetails(ctx, incidentID)
+	// Get details
+	alertGroup, err := n.grafanaSvc.IncidentDetails(ctx, incidentID)
 
-		if alertGroup != nil {
-			alertID = alertGroup.AlertID()
+	if err != nil {
+		n.logger.Error().
+			Int("incident_id", incidentID).
+			Err(err).
+			Msg("Failed to load incident details via Grafana API")
+	}
 
-			if notificationType == notifyByPhone {
-				// Render message
-				msg = alertGroup.PhoneCall(msg)
-			}
+	if alertGroup != nil {
+		alertID = alertGroup.AlertID()
 
-			if notificationType == notifyBySms {
-				// Render message
-				msg = alertGroup.SMSText(msg)
-			}
+		n.logger.Info().
+			Int("incident_id", incidentID).
+			Str("alert_id", alertID).
+			Msg("Loaded incident details from Grafana OnCall API")
+
+		if notificationType == phoneCallNotify {
+			// Render message
+			msg = alertGroup.PhoneCall(msg)
+		}
+
+		if notificationType == smsTextNotify {
+			// Render message
+			msg = alertGroup.SMSText(msg)
 		}
 	}
 
-	if notificationType == notifyByPhone {
-		err = nh.plugin.CallPhone(ctx, *userResult, alertID, msg)
+	if notificationType == phoneCallNotify {
+		err = n.plugin.CallPhone(ctx, *userResult, alertID, msg)
 	} else {
-		err = nh.plugin.SendSms(ctx, *userResult, alertID, msg)
+		err = n.plugin.SendSms(ctx, *userResult, alertID, msg)
 	}
 
 	if err != nil {
-		nh.logger.Error().
+		n.logger.Error().
 			Err(err).
 			Interface("email", request.Email).
 			Interface("phone", userResult.PhoneNumber).
 			Str("notification_type", notificationType).
 			Int("incident_id", incidentID).
 			Str("alert_id", alertID).
-			Msg("Unable to Send notification")
+			Msg("Unable to send notification")
 
 		if err == sql.ErrNoRows {
 			err = errInvalidPushToken
 		}
 
-		nh.logAction(userResult.ID,
+		n.logAction(userResult.ID,
 			userResult.PhoneNumber, notificationType, false, err.Error())
 
-		return &NotifyResponse{Error: err.Error()}, nil
+		return nil, err
 	}
 
 	successStr := sentSuccess
-	if notificationType == notifyByPhone {
+	if notificationType == phoneCallNotify {
 		successStr = callSuccess
 	}
 
-	nh.logger.Info().
+	n.logger.Info().
 		Interface("notification_type", notificationType).
 		Interface("phone", userResult.PhoneNumber).
 		Msg(successStr)
 
-	nh.logAction(userResult.ID, userResult.PhoneNumber, notificationType, true, successStr)
+	n.logAction(userResult.ID, userResult.PhoneNumber, notificationType, true, successStr)
 
-	nh.cache.Store(request.Email, *userResult)
-
-	return &NotifyResponse{}, nil
+	return &notifyResponse{}, nil
 }
 
-func (nh *Notify) validate(_ context.Context, req *http.Request, _ string) (*NotifyRequest, error) {
+func (n *Notify) validate(_ context.Context, req *http.Request, _ string) (*NotifyRequest, error) {
+	err := req.ParseForm()
+	if err != nil {
+		return nil, err
+	}
+
 	formData := req.PostForm
 
-	nh.logger.Info().
+	n.logger.Info().
 		Interface("request", formData).
 		Str("url", req.URL.String()).
 		Msg("Incoming request")
 
 	email := formData.Get("email")
-	if !nh.isValidEmail(email) {
+	if !strings.Contains(email, "@") {
 		return nil, errInvalidEmail
 	}
 
@@ -233,31 +236,27 @@ func (nh *Notify) validate(_ context.Context, req *http.Request, _ string) (*Not
 }
 
 //nolint:interfacer
-func (nh *Notify) user(ctx context.Context, email string) (*user2.Item, error) {
+func (n *Notify) user(ctx context.Context, email string) (*user.Item, error) {
 	// Lookup in DB, if not found - use user from local cache
-
-	userResult, err := nh.userData.ByEmail(ctx, email)
+	userResult, err := n.users.WithEmail(ctx, email)
 	if err == nil {
+		n.cache.Store(email, userResult)
 		return userResult, nil
 	}
 
-	if cachedItem, ok := nh.cache.Load(email); ok {
-		return cachedItem.(*user2.Item), nil
+	if cachedItem, ok := n.cache.Load(email); ok {
+		return cachedItem.(*user.Item), nil
 	}
 
 	return nil, errUserNotFound
 }
 
-func (nh *Notify) isValidEmail(email string) bool {
-	return strings.Contains(email, "@")
-}
-
-func (nh *Notify) logAction(userID, phoneNumber, route string, success bool, msg string) {
-	if nh.actionsLog == nil {
+func (n *Notify) logAction(userID, phoneNumber, route string, success bool, msg string) {
+	if n.actionsLog == nil {
 		return
 	}
 
-	record := &events.Item{
+	record := &events.Record{
 		Timestamp: time.Now(),
 		UserID:    userID,
 		Recipient: phoneNumber,
@@ -266,5 +265,5 @@ func (nh *Notify) logAction(userID, phoneNumber, route string, success bool, msg
 		Msg:       msg,
 	}
 
-	_ = nh.actionsLog.Add(record)
+	_ = n.actionsLog.Add(record)
 }

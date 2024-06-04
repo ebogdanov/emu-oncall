@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+
+	"github.com/ebogdanov/emu-oncall/internal/metrics"
 )
 
 const (
@@ -11,7 +14,8 @@ const (
 )
 
 type Integration struct {
-	hostname string
+	hostname    string
+	promMetrics *metrics.Storage
 }
 
 type IntegrationsResponse struct {
@@ -85,18 +89,34 @@ type Heartbeat struct {
 	Link string `json:"link"`
 }
 
-func NewIntegration(host string) *Integration {
+func NewIntegration(host string, promMetrics *metrics.Storage) *Integration {
 	return &Integration{
-		hostname: fmt.Sprintf("https://%s/oncall/integrations", host),
+		hostname:    host,
+		promMetrics: promMetrics,
 	}
 }
 
 func (i *Integration) ServeHTTP(response http.ResponseWriter, req *http.Request) {
+	uri := i.hostname
+
+	if uri == "" {
+		uri = fmt.Sprintf("http://%s", req.Host)
+	}
+	uri += "/api/v1/integrations"
+
+	name := ""
+	parts, err := url.Parse(uri)
+	if err != nil {
+		name = uri
+	} else {
+		name = parts.Host
+	}
+
 	// This endpoint is not used, so that IDs are hardcoded
 	item := &IntegrationResult{
 		ID:   "F566XENITUQK4",
-		Name: fmt.Sprintf("OnCall Cloud Heartbeat %s", i.hostname),
-		Link: i.hostname + webhookURL,
+		Name: fmt.Sprintf("OnCall Cloud Heartbeat %s", name),
+		Link: fmt.Sprintf("%s%s", uri, webhookURL),
 		Type: "formatted_webhook",
 		Templates: &Templates{
 			Sms:       &TitleTemplate{},
@@ -107,7 +127,7 @@ func (i *Integration) ServeHTTP(response http.ResponseWriter, req *http.Request)
 			Telegram:  &MessengerTemplate{},
 			PhoneCall: &TitleTemplate{},
 		},
-		Heartbeat: &Heartbeat{Link: i.hostname + webhookURL + "heartbeat/"},
+		Heartbeat: &Heartbeat{Link: fmt.Sprintf("%s%sheartbeat/", uri, webhookURL)},
 		DefaultRoute: &DefaultRoute{
 			ID:                "U7SF1KOR2KU6C",
 			Slack:             &SlackChannelEnabled{},
@@ -128,6 +148,7 @@ func (i *Integration) ServeHTTP(response http.ResponseWriter, req *http.Request)
 	if req.Method == http.MethodPost {
 		response.WriteHeader(http.StatusCreated)
 	} else {
+		i.promMetrics.Heartbeat.Inc()
 		response.WriteHeader(http.StatusOK)
 	}
 

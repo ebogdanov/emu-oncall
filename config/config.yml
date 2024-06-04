@@ -1,0 +1,31 @@
+debug: true
+app:
+  port: ":8880"
+  hostname: "" # Use this if service is proxied by something, like ingress, balancer, etc
+  version: "1.0"
+  log_level: "info"
+  auth_token: "test-it-settr" # leave it blank to accept any key
+
+grafana: # if this is set, service will load users from Grafana
+  url: "http://localhost:3000/"
+  header_token: "Basic YWRtaW46YWRtaW4=" # Service account doesn't work for me for some reason
+  oncall:
+    url: "http://localhost:8080"
+    header_token: "Basic test:test"
+    incident_details: true
+    schedules:
+      SCH1BE4G2E8RW:
+        details: true
+        name: "test_team_schedule"
+        team: "test_duty_team"
+        transport: "local" # "local", "callback", if set local or callback - service will send notification about schedule start
+        ical_url: "/api/v1/schedules/SCH1BE4G2E8RW/export?token=05598a95e104dc3b1746145985b6ed99" # Test Schedule export iCAL
+        callback_url: ""
+db:
+  addr: "localhost"
+  port: 15432
+  user: "user"
+  password: "example"
+  dbname: "emu_oncall"
+  driver: "postgres"
+

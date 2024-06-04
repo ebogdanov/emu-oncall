@@ -2,10 +2,10 @@ package events
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
-	"github.com/ebogdanov/emu-oncall/internal/logger"
+	"github.com/ebogdanov/emu-oncall/internal/db"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -13,10 +13,10 @@ const (
 )
 
 type Service interface {
-	Add(i *Item) error
+	Add(i *Record) error
 }
 
-type Item struct {
+type Record struct {
 	Timestamp time.Time
 	UserID    string
 	Recipient string
@@ -26,51 +26,49 @@ type Item struct {
 }
 
 type DefaultService struct {
-	pool   chan *Item
+	pool   chan *Record
 	stop   chan bool
-	db     *sql.DB
-	logger logger.Instance
+	db     *db.DBx
+	logger zerolog.Logger
 }
 
-func New(dbShard *sql.DB, l logger.Instance) *DefaultService {
+func New(dbShard *db.DBx, l zerolog.Logger) *DefaultService {
 	return &DefaultService{
-		pool:   make(chan *Item, 10000),
+		pool:   make(chan *Record, 10000),
 		stop:   make(chan bool),
 		db:     dbShard,
-		logger: l,
+		logger: l.With().Str("component", "events").Logger(),
 	}
 }
 
-func (d *DefaultService) Start(ctx context.Context) {
-	go func() {
-		for {
-			select {
-			case data := <-d.pool:
-				d.insert(data)
-			case <-ctx.Done():
-				close(d.pool)
-				return
-			case <-d.stop:
-				close(d.pool)
-				return
-			default:
-				time.Sleep(waitTime)
-			}
+func (d *DefaultService) Listen(ctx context.Context) {
+	for {
+		select {
+		case data := <-d.pool:
+			d.insert(data)
+		case <-ctx.Done():
+			close(d.pool)
+			return
+		case <-d.stop:
+			close(d.pool)
+			return
+		default:
+			time.Sleep(waitTime)
 		}
-	}()
+	}
 }
 
 func (d *DefaultService) Stop() {
 	d.stop <- true
 }
 
-func (d *DefaultService) Add(item *Item) error {
+func (d *DefaultService) Add(item *Record) error {
 	d.pool <- item
 
 	return nil
 }
 
-func (d *DefaultService) insert(item *Item) {
+func (d *DefaultService) insert(item *Record) {
 	msg := item.Msg
 	if len(msg) > 500 {
 		msg = msg[:500]
@@ -81,6 +79,6 @@ func (d *DefaultService) insert(item *Item) {
 		&item.Timestamp, &item.UserID, &item.Channel, &item.Recipient, &item.Success, &msg)
 
 	if err != nil {
-		d.logger.Error().Str("component", "events").Err(err).Msg("unable to insert events into database")
+		d.logger.Error().Err(err).Msg("unable to insert events into database")
 	}
 }

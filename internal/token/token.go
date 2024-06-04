@@ -2,10 +2,15 @@ package token
 
 import (
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"github.com/ebogdanov/emu-oncall/internal/config"
+)
+
+var (
+	errInvalidAuthToken = errors.New("invalid auth token")
 )
 
 type Service interface {
@@ -16,8 +21,8 @@ type envTokenService struct {
 	authToken string
 }
 
-func NewEnv() Service {
-	return &envTokenService{authToken: os.Getenv("AUTH_TOKEN")}
+func NewFromConfig(app *config.App) Service {
+	return &envTokenService{authToken: app.AuthToken}
 }
 
 func (s *envTokenService) Verify(r *http.Request) error {
@@ -25,13 +30,11 @@ func (s *envTokenService) Verify(r *http.Request) error {
 		return nil
 	}
 
-	authToken := r.Header.Get("Authorization")
+	authToken := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 
-	authToken = strings.TrimPrefix(authToken, "Bearer")
-
-	if authToken == s.authToken {
-		return nil
+	if authToken != s.authToken {
+		return errInvalidAuthToken
 	}
 
-	return errors.New("invalid auth token")
+	return nil
 }

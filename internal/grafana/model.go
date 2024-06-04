@@ -1,14 +1,18 @@
 package grafana
 
 const (
-	push     = "push"
 	callback = "callback"
 )
 
 type alertGroupResponse struct {
-	Next     string       `json:"next,omitempty"`
-	Previous string       `json:"previous,omitempty"`
-	Results  []AlertGroup `json:"results"`
+	Next       string       `json:"next,omitempty"`
+	Previous   string       `json:"previous,omitempty"`
+	Results    []AlertGroup `json:"results"`
+	Message    string       `json:"message,omitempty"`
+	MsgID      string       `json:"messageId,omitempty"`
+	StatusCode int          `json:"statusCode,omitempty"`
+	TraceID    string       `json:"traceID,omitempty"`
+	Detail     string       `json:"detail,omitempty"`
 }
 
 type alertReceiveChannel struct {
@@ -65,25 +69,15 @@ type User struct {
 	AuthLabels    []string `json:"authLabels"`
 }
 
-type scheduleItem struct {
-	ID        string   `json:"id"`
-	TeamID    string   `json:"team_id"`
-	Name      string   `json:"name"`
-	TimeZone  string   `json:"time_zone"`
-	OnCallNow []string `json:"on_call_now"`
-	Shifts    []string `json:"shifts"`
-	Slack     struct {
-		ChannelID   string `json:"channel_id"`
-		UserGroupID string `json:"user_group_id"`
-	} `json:"slack,omitempty"`
-	Type string `json:"type"`
-}
-
-type schedulesResponse struct {
-	Count    int            `json:"count"`
-	Next     interface{}    `json:"next,omitempty"`
-	Previous interface{}    `json:"previous,omitempty"`
-	Results  []scheduleItem `json:"results"`
+type ScheduleItem struct {
+	ID          string   `json:"id"`
+	TeamID      string   `json:"team_id"`
+	Name        string   `json:"name"`
+	TimeZone    string   `json:"time_zone"`
+	Users       []string `json:"on_call_now"`
+	Shifts      []string `json:"shifts"`
+	transport   string
+	callbackURL string
 }
 
 type scheduleEvent struct {
@@ -92,6 +86,7 @@ type scheduleEvent struct {
 	UserID       string
 	Msg          string
 	ScheduleName string
+	URL          string
 }
 
 // "ok" or "alerting"

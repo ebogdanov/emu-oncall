@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"os"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -13,25 +14,27 @@ const (
 )
 
 type App struct {
-	Debug        bool
-	ConfigFile   string
-	Env          string
-	Hostname     string
-	Name         string
-	LogLevel     string
 	Port         string
+	Debug        bool
+	Hostname     string
+	LogLevel     string
 	Version      string
+	AuthToken    string
+	LogPath      string
 	WriteTimeout time.Duration
+	Plugin       interface{}
 }
 
-func ParseFlags() (*App, error) {
+func Parse() (*App, error) {
 	flag.Bool("debug", true, "Enable debug mode")
-	flag.String("app.port", ":8080", "Application port")
-	flag.String("app.hostname", "localhost", "Application hostname")
-	flag.String("app.env", "dev", "Application environment")
-	flag.String("app.log_level", "debug", "The minimum logging level")
-	flag.String("config", "config.yaml", "Path to config file")
-	flag.Duration("app.write_timeout", defaultWriteTimeout, "The maximum duration before timing out writes of the server response")
+	flag.String("config", "config/config.yml", "Path to config file")
+
+	flag.String("ui.auth_token", os.Getenv("AUTH_TOKEN"), "Auth token used for API request authorizations")
+	flag.String("ui.port", ":8880", "Application port")
+	flag.String("ui.hostname", "", "Application hostname")
+	flag.String("ui.log_level", "debug", "The minimum logging level")
+	flag.String("ui.log_path", "", "Path to file where logs should be stored")
+	flag.Duration("ui.write_timeout", defaultWriteTimeout, "The maximum duration before timing out writes of the server response")
 
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	pflag.Parse()
@@ -40,23 +43,25 @@ func ParseFlags() (*App, error) {
 		return nil, err
 	}
 
-	appConfig := &App{
-		Debug:        viper.GetBool("debug"),
-		Env:          viper.GetString("app.env"),
-		Port:         viper.GetString("app.port"),
-		ConfigFile:   viper.GetString("app.config"),
-		Version:      viper.GetString("app.version"),
-		Hostname:     viper.GetString("app.hostname"),
-		LogLevel:     viper.GetString("app.log_level"),
-		WriteTimeout: viper.GetDuration("app.write_timeout"),
-	}
+	configFile := viper.GetString("config")
 
-	viper.AddConfigPath("config") // path to look for the config file in
+	// path to look for the config file in
 	viper.AddConfigPath(".")
+	viper.SetConfigFile(configFile)
 
-	viper.SetConfigFile(appConfig.ConfigFile)
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
+	}
+
+	appConfig := &App{
+		Debug:        viper.GetBool("debug"),
+		Port:         viper.GetString("ui.port"),
+		Version:      viper.GetString("ui.version"),
+		Hostname:     viper.GetString("ui.hostname"),
+		LogLevel:     viper.GetString("ui.log_level"),
+		WriteTimeout: viper.GetDuration("ui.write_timeout"),
+		AuthToken:    viper.GetString("ui.auth_token"),
+		Plugin:       viper.Get("plugin"),
 	}
 
 	return appConfig, nil

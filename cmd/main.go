@@ -7,40 +7,49 @@ import (
 	"os"
 	"time"
 
+	"github.com/ebogdanov/emu-oncall/internal/ui"
+
+	"github.com/ebogdanov/emu-oncall/internal/api"
+
 	"github.com/ebogdanov/emu-oncall/internal/db"
 	"github.com/ebogdanov/emu-oncall/internal/events"
 	"github.com/ebogdanov/emu-oncall/internal/grafana"
 	"github.com/ebogdanov/emu-oncall/internal/logger"
+	"github.com/ebogdanov/emu-oncall/internal/metrics"
 	"github.com/ebogdanov/emu-oncall/internal/token"
 	"github.com/ebogdanov/emu-oncall/internal/user"
 
-	"github.com/ebogdanov/emu-oncall/internal/api/routes"
 	v1 "github.com/ebogdanov/emu-oncall/internal/api/v1"
 	"github.com/ebogdanov/emu-oncall/internal/config"
 	"github.com/ebogdanov/emu-oncall/plugin"
 
-	apihttp "github.com/ebogdanov/emu-oncall/internal/api/http"
-
 	"github.com/ebogdanov/emu-oncall/internal/graceful"
 )
 
+var (
+	appConfig *config.App
+
+	err error
+)
+
 func main() {
-	appConfig, err := config.ParseFlags()
+	appConfig, err = config.Parse()
 	if err != nil {
-		fmt.Println(fmt.Errorf("fatal error: %v", err))
+		fmt.Printf("fatal error: %v", err)
 
 		os.Exit(10)
 	}
+
+	graceful.Init()
 
 	log := logger.Init(appConfig)
 
 	dbCfg := config.ParseDB()
 	grafanaCfg := config.ParseGrafana()
 
-	// Or you can use for testing:
-	notifier := plugin.NewTextOutput(log)
+	promMetrics := metrics.NewMetrics()
 
-	sqlShard, err := db.Init(dbCfg)
+	sqlShard, err := db.Init(dbCfg, promMetrics)
 	if err != nil {
 		log.Fatal().Err(err).
 			Str("addr", dbCfg.Addr).
@@ -49,55 +58,76 @@ func main() {
 			Msg("unable connect to database")
 	}
 
-	// Data repositories
-	repoUser := user.NewStorage(sqlShard, log)
+	// Or you can use for testing:
+	// notifier := plugin.NewTextOutput(log)
+	notifier := plugin.NewWb(log, sqlShard, appConfig.Plugin, promMetrics)
+
+	userStorage := user.NewStorage(sqlShard, log)
 
 	// Services
-	actions := events.New(sqlShard, *log)
-	grafanaConnect := grafana.New(grafanaCfg, notifier, repoUser, log)
+	actions := events.New(sqlShard, log)
+	grafanaConnect := grafana.New(grafanaCfg, notifier, userStorage, log, promMetrics)
 
-	infoHandler := v1.NewInfo()
-	userHandler := v1.NewUsers(repoUser)
-	integrationHandler := v1.NewIntegration(appConfig.Hostname)
-	notifyHandler := v1.NewNotify(repoUser, notifier, log, actions, grafanaConnect)
+	healthCheck := func(result *api.HealthResponse) {
+		result.Ping = sqlShard.Ping() == nil
 
-	tokenSrv := token.NewEnv()
-
-	routeList := routes.NewRoutes(userHandler, infoHandler, integrationHandler, notifyHandler, tokenSrv)
-	router := routeList.Init()
-
-	if appConfig.Debug {
-		apihttp.AttachProfiler(router)
+		if result.Ping {
+			result.HTTPCode = http.StatusOK
+		}
 	}
+
+	info := v1.NewInfo(appConfig)
+	usersV1 := v1.NewUsers(userStorage)
+	tokenSrv := token.NewFromConfig(appConfig)
+	notifyV1 := v1.NewNotify(userStorage, notifier, log, actions, grafanaConnect, promMetrics)
+	integrationV1 := v1.NewIntegration(appConfig.Hostname, promMetrics)
+	onCallUI := ui.New()
+
+	handlers := api.NewHandlers(usersV1, info, integrationV1, notifyV1, tokenSrv, onCallUI)
+	health := api.NewHealthChecker(appConfig.Version, healthCheck)
+
+	routes := api.NewRoutes(handlers, promMetrics)
+	routes.AttachMetrics().
+		AddHealthCheck(health).
+		AttachProfiler(appConfig.Debug).
+		AttachOnCallApp()
 
 	server := &http.Server{
 		Addr:         appConfig.Port,
-		Handler:      router,
+		Handler:      routes.R(),
 		ReadTimeout:  appConfig.WriteTimeout,
 		WriteTimeout: appConfig.WriteTimeout + 100*time.Microsecond,
 	}
 
 	ctx := context.Background()
+	go func() {
+		actions.Listen(ctx)
+	}()
+
 	graceful.AddCallback(func() error {
-		return server.Shutdown(ctx)
+		ctx.Done()
+		actions.Stop()
+
+		log.Info().Msg("server was gracefully stopped")
+
+		return nil
 	})
 
 	go func() {
-		log.Info().Msgf("HTTP server: listening on %s", appConfig.Port)
+		grafanaConnect.Start(ctx)
+	}()
+
+	go func() {
+		log.Info().Msgf("HTTP Server: listening on %s", appConfig.Port)
 
 		err = server.ListenAndServe()
 		if err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("failed to listen server")
+			log.Fatal().Err(err).Msg("failed to bind server")
 		}
 	}()
-	actions.Start(ctx)
-	grafanaConnect.Start(ctx)
 
 	err = graceful.WaitShutdown()
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to gracefully shutdown server")
+		log.Fatal().Err(err).Msg("failed to gracefully shutdown the server")
 	}
-
-	actions.Stop()
-	log.Info().Msg("server gracefully stopped")
 }

@@ -11,10 +11,6 @@ type engineToken struct {
 	Token    string
 }
 
-type authCredentials interface {
-	HeaderValue() string
-}
-
 func (t *engineToken) HeaderValue() string {
 	if t.Token != "" {
 		return t.Token
