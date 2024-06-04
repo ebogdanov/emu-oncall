@@ -15,7 +15,7 @@ for addr in "${addr_array[@]}"; do
   $SSH_CMD docker run -d --net=host --name "${containerName}" -h "\$HOSTNAME" \
     --restart=always \
     --log-opt max-size=200m --log-opt max-file=3 ${IMAGE} \
-    -v /opt/ironmaiden/config:/opt/ironmaiden/config \
+    -v /opt/emu-oncall/config:/opt/config \
 
   $SSH_CMD docker ps
   $SSH_CMD docker logs "${containerName}"

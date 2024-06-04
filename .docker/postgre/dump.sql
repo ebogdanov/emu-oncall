@@ -1,6 +1,6 @@
 SET client_encoding = 'UTF8';
 
-ALTER DATABASE ironmaiden OWNER TO "user";
+ALTER DATABASE emu-oncall OWNER TO "user";
 
 CREATE TYPE public.role_type AS ENUM (
     'user',

@@ -11,7 +11,7 @@ services:
     volumes:
       - ./.docker/postgre:/docker-entrypoint-initdb.d
     networks:
-      - ironmaiden
+      - emuoncall
     ports:
       - '15432:5432'
 
