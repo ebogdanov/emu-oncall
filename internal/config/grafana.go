@@ -15,7 +15,6 @@ type Grafana struct {
 
 type ScheduleEntry struct {
 	Name        string
-	Team        string
 	Transport   string
 	CallbackURL string
 	IcalURL     string
@@ -68,17 +67,8 @@ func ParseGrafana() *Grafana {
 			Name: name,
 		}
 
-		item.Details = entry["details"].(bool)
-		if _, ok := entry["details"].(bool); ok {
-			item.Details = entry["details"].(bool)
-		}
-
 		if _, ok := entry["name"].(string); ok {
 			item.Name = entry["name"].(string)
-		}
-
-		if _, ok := entry["team"].(string); ok {
-			item.Name = entry["team"].(string)
 		}
 
 		if _, ok := entry["notify"].(string); ok {

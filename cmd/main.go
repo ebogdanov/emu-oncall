@@ -58,9 +58,8 @@ func main() {
 			Msg("unable connect to database")
 	}
 
-	// Or you can use for testing:
-	// notifier := plugin.NewTextOutput(log)
-	notifier := plugin.NewWb(log, sqlShard, appConfig.Plugin, promMetrics)
+	// Now you can use for testing:
+	notifier := plugin.NewTextOutput(log)
 
 	userStorage := user.NewStorage(sqlShard, log)
 
@@ -81,7 +80,7 @@ func main() {
 	tokenSrv := token.NewFromConfig(appConfig)
 	notifyV1 := v1.NewNotify(userStorage, notifier, log, actions, grafanaConnect, promMetrics)
 	integrationV1 := v1.NewIntegration(appConfig.Hostname, promMetrics)
-	onCallUI := ui.New()
+	onCallUI := ui.New(appConfig, log)
 
 	handlers := api.NewHandlers(usersV1, info, integrationV1, notifyV1, tokenSrv, onCallUI)
 	health := api.NewHealthChecker(appConfig.Version, healthCheck)

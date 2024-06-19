@@ -4,6 +4,7 @@ go 1.20
 
 require (
 	github.com/Masterminds/squirrel v1.5.3
+	github.com/boombuler/barcode v1.0.1
 	github.com/gorilla/mux v1.8.0
 	github.com/lib/pq v1.10.9
 	github.com/luxifer/ical v0.0.0-20231107150406-73c19137aec4

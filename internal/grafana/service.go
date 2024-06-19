@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	endpointIncidentDetails = "%s/api/plugin-proxy/grafana-oncall-ui/api/internal/v1/alertgroups?search=%d"
+	endpointIncidentDetails = "%s/api/plugin-proxy/grafana-oncall-app/api/internal/v1/alertgroups?search=%d"
 )
 
 const (

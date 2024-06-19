@@ -88,7 +88,7 @@ func (d *Routes) addAPIv1() *Routes {
 	router.PathPrefix("/make_call").Handler(d.handlers.notify).Methods(http.MethodPost)
 	router.PathPrefix("/send_sms").Handler(d.handlers.notify).Methods(http.MethodPost)
 
-	// todo /ack
+	// todo /ack (can be usefult for acknowledging alerts)
 
 	return d
 }
@@ -129,7 +129,7 @@ func (d *Routes) AttachProfiler(debugMode bool) *Routes {
 }
 
 func (d *Routes) AttachOnCallApp() *Routes {
-	d.r.Handle("/a/grafana-oncall-ui/", d.handlers.oncall)
+	d.r.PathPrefix("/a/grafana-oncall-app").Handler(d.handlers.oncall).Methods(http.MethodGet)
 
 	return d
 }

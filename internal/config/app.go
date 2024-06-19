@@ -29,12 +29,12 @@ func Parse() (*App, error) {
 	flag.Bool("debug", true, "Enable debug mode")
 	flag.String("config", "config/config.yml", "Path to config file")
 
-	flag.String("ui.auth_token", os.Getenv("AUTH_TOKEN"), "Auth token used for API request authorizations")
-	flag.String("ui.port", ":8880", "Application port")
-	flag.String("ui.hostname", "", "Application hostname")
-	flag.String("ui.log_level", "debug", "The minimum logging level")
-	flag.String("ui.log_path", "", "Path to file where logs should be stored")
-	flag.Duration("ui.write_timeout", defaultWriteTimeout, "The maximum duration before timing out writes of the server response")
+	flag.String("app.auth_token", os.Getenv("AUTH_TOKEN"), "Auth token used for API request authorizations")
+	flag.String("app.port", ":8880", "Application port")
+	flag.String("app.hostname", "", "Application hostname")
+	flag.String("app.log_level", "debug", "The minimum logging level")
+	flag.String("app.log_path", "", "Path to file where logs should be stored")
+	flag.Duration("app.write_timeout", defaultWriteTimeout, "The maximum duration before timing out writes of the server response")
 
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	pflag.Parse()
@@ -55,12 +55,12 @@ func Parse() (*App, error) {
 
 	appConfig := &App{
 		Debug:        viper.GetBool("debug"),
-		Port:         viper.GetString("ui.port"),
-		Version:      viper.GetString("ui.version"),
-		Hostname:     viper.GetString("ui.hostname"),
-		LogLevel:     viper.GetString("ui.log_level"),
-		WriteTimeout: viper.GetDuration("ui.write_timeout"),
-		AuthToken:    viper.GetString("ui.auth_token"),
+		Port:         viper.GetString("app.port"),
+		Version:      viper.GetString("app.version"),
+		Hostname:     viper.GetString("app.hostname"),
+		LogLevel:     viper.GetString("app.log_level"),
+		WriteTimeout: viper.GetDuration("app.write_timeout"),
+		AuthToken:    viper.GetString("app.auth_token"),
 		Plugin:       viper.Get("plugin"),
 	}
 

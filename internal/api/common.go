@@ -28,7 +28,11 @@ func (rr *responseRecorder) WriteHeader(code int) {
 }
 
 func notFoundHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%s [404] - %s %s %s", r.RemoteAddr, r.Method, r.RequestURI, r.UserAgent())
+	log.Error().Str("http_code", "404").
+		Str("remote_addr", r.RemoteAddr).
+		Str("method", r.Method).
+		Str("request_uri", r.RequestURI).
+		Str("user_agent", r.UserAgent()).Send()
 
 	w.WriteHeader(http.StatusNotFound)
 	resp, _ := json.Marshal(&errResponse{Error: fmt.Sprintf("path %s is not found", r.RequestURI)})
@@ -37,7 +41,9 @@ func notFoundHandler(w http.ResponseWriter, r *http.Request) {
 
 func jsonContentTypeHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Content-Type", "application/json; charset=utf-8")
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Add("Content-Type", "application/json; charset=utf-8")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -63,9 +69,6 @@ func metricsMiddleware(promMetrics *metrics.Storage, next http.Handler) http.Han
 
 		rr := &responseRecorder{ResponseWriter: w}
 		next.ServeHTTP(rr, r)
-
-		log.Printf("%s [%d] - %s %s %s", r.RemoteAddr, rr.statusCode, r.Method, r.RequestURI, r.UserAgent())
-
 		status := fmt.Sprintf("%d", rr.statusCode)
 		uri := strings.TrimRight(r.URL.Path, "/")
 
@@ -79,7 +82,7 @@ func metricsMiddleware(promMetrics *metrics.Storage, next http.Handler) http.Han
 			Str("request_uri", r.RequestURI).
 			Dur("request_time", duration).
 			Str("user_agent", r.UserAgent()).
-			Msg("Processed request")
+			Send()
 
 		promMetrics.HTTPRequestDuration.WithLabelValues(uri, r.Method, status).Observe(duration.Seconds())
 	})

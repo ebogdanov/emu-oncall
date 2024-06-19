@@ -10,11 +10,11 @@ import (
 )
 
 type TextOutput struct {
-	logger *zerolog.Logger
+	logger zerolog.Logger
 }
 
-func NewTextOutput(l *zerolog.Logger) *TextOutput {
-	return &TextOutput{logger: l}
+func NewTextOutput(l zerolog.Logger) *TextOutput {
+	return &TextOutput{logger: l.With().Str("engine", "textoutput").Logger()}
 }
 
 func (t *TextOutput) CallPhone(_ context.Context, u user.Item, alertID, alertText string) error {
@@ -28,6 +28,6 @@ func (t *TextOutput) SendSms(_ context.Context, u user.Item, alertID, alertText 
 }
 
 func (t *TextOutput) MessageSlack(_ context.Context, u user.Item, alertID, alertText string) error {
-	t.logger.Debug().Msgf("Send slack message to dbUser with id %s with text %s, alert id: %s", u.ID, alertText, alertID)
+	t.logger.Debug().Msgf("Send slack message to user with id %s, text %s, alert id: %s", u.ID, alertText, alertID)
 	return nil
 }
