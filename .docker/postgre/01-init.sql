@@ -61,6 +61,7 @@ create table public.events
     success   boolean               not null default false,
     msg       character varying(500)
 );
+
 create index index_date_add on public.events using btree (date_add);
 create index index_success on public.events using btree (success);
 create index index_recipient on public.events using btree (recipient);
@@ -70,7 +71,3 @@ alter sequence public.events_id_seq owned by public.events.id;
 
 REVOKE USAGE ON SCHEMA public FROM PUBLIC;
 GRANT ALL ON SCHEMA public TO PUBLIC;
-
-INSERT INTO public.oncall_users (id, user_id, name, username, email, phone_number, active, role)
-VALUES (1, 'SUPERTEST1', 'John Doe', 'admin@localhost', 'admin@localhost', '+79000000000', true, 'admin'),
-       (2, 'SUPERTEST2', 'Ivan Doe', 'user@localhost', 'user@localhost', '+79990000000', true, 'user');

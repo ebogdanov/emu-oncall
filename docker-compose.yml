@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: user
       POSTGRES_DB: emu_oncall
     volumes:
-      - ./.docker/postgre/dump.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./.docker/postgre/:/docker-entrypoint-initdb.d/
     networks:
       - emuoncall
     ports:

@@ -23,4 +23,8 @@ bin/
 .env.local
 config/prod.yml
 config/test.yml
+config/config-test*.yml
 
+.docker/postgre/04-plugin.sql
+.docker/postgre/05-plugin.sql
+plugin/wb.go
